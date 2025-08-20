@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <title>Half Dome Hike Story - Fixed</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- D3 + Scrollama + Mapbox (try different CDN) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/scrollama/3.2.0/scrollama.min.js"></script>
+    <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+    <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Lora:wght@400;600&display=swap" rel="stylesheet">
+
+    <style>
+        body {
+            margin: 0;
+            font-family: "Lora", serif;
+            display: flex;
+        }
+
+        #intro {
+            margin: 0 0 4em 0;
+        }
+
+        #intro h1 {
+            font-size: 2.5em;
+            margin-bottom: 0.5em;
+        }
+
+        #intro p {
+            font-size: 1.3em;
+            line-height: 1.6;
+        }
+
+        #story {
+            width: 50%;
+            overflow-y: scroll;
+            height: 100vh;
+            padding: 2em;
+            background: #ebe8e1;
+        }
+
+        .chapter {
+            margin: 0 0 3em 0;
+        }
+
+        .chapter p {
+            font-size: 1.05em;
+            line-height: 1.5;
+        }
+
+        .chapter img {
+            width: 100%;
+            border-radius: 12px;
+            margin: 1em 0;
+        }
+
+        #map-col {
+            width: 50%;
+            position: sticky;
+            top: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #map {
+            flex: 1;
+        }
+
+        #elevation {
+            height: 200px;
+            background: linear-gradient(to top, #b0bec5 0%, #e0e0e0 40%, #ffffff 100%);
+        }
+
+        svg {
+            width: 100%;
+            height: 100%;
+        }
+
+        .elev-line {
+            fill: none;
+            stroke: #555;
+            stroke-width: 2;
+        }
+
+        .elev-dot {
+            fill: #2980b9;
+        }
+
+        .debug-info {
+            display: none;
+        }
+
+        .byline {
+            font-size: 0.9em;
+            font-weight: 300;
+            color: #666;
+            font-style: italic;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="story"></div>
+    <div id="map-col">
+        <div id="map"></div>
+        <div id="elevation">
+            <svg></svg>
+        </div>
+    </div>
+
+    <script>
+        // Load data
+        Promise.all([
+            d3.csv("assets/photos.csv"),
+            d3.csv("assets/elevation.csv"),
+            d3.json("assets/route.geojson")
+        ]).then(([photos, elevRaw, route]) => {
+
+            console.log('Data loaded successfully');
+            console.log('Photos:', photos.length);
+            console.log('Elevation points:', elevRaw.length);
+
+            // ---- Photos parsing
+            photos.forEach(d => {
+                d.lat = +d.lat; d.lon = +d.lon;
+                d.timestamp = new Date(d.timestamp);
+            });
+
+            if (photos.length && photos[0].id !== undefined) {
+                photos.sort((a, b) => String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
+            }
+
+            // ---- Elevation parsing
+            const MI_TO_M = 1609.34, FT_TO_M = 0.3048;
+            const elev = elevRaw.map(r => {
+                const dm = +r.distance_m, zm = +r.elevation_m;
+                const dmi = +r.distance_miles, zft = +r.elevation_feet;
+                let _dist_m = NaN, _elev_m = NaN;
+
+                if (!Number.isNaN(dm) && !Number.isNaN(zm)) {
+                    _dist_m = dm; _elev_m = zm;
+                } else if (!Number.isNaN(dmi) && !Number.isNaN(zft)) {
+                    _dist_m = dmi * MI_TO_M; _elev_m = zft * FT_TO_M;
+                }
+                return Number.isNaN(_dist_m) || Number.isNaN(_elev_m) ? null : { _dist_m, _elev_m };
+            }).filter(Boolean);
+
+            // ---- STORY (left column)
+            const intro = d3.select("#story")
+                .append("div")
+                .attr("id", "intro");
+
+            intro.append("h1").text("Hiking Half Dome (August 2025)");
+            intro.append("p").text("Sometimes as a parent, you have to go the extra mile to get quality time with your kids. Make that 16 extra miles. That's the round-trip distance of hiking from Yosemite's Happy Isles to the top of the iconic Half Dome. I had done this famously scenic and strenuous hike twice before and had no plans for a third. But my daughter and son really, really wanted to do it. And what better way to bond with them than to experience the exhilaration and exhaustion of doing The Dome together? So off we went.");
+
+            const story = d3.select("#story");
+            photos.forEach(d => {
+                const ch = story.append("div").attr("class", "chapter").attr("id", "ch-" + d.id);
+                ch.append("h2").text(d.title || "");
+                ch.append("p").text(d.caption || "");
+
+                // Check file extension to determine if it's a video or image
+                const fileExtension = d.src.split('.').pop().toLowerCase();
+                if (fileExtension === 'mov' || fileExtension === 'mp4' || fileExtension === 'webm') {
+                    // Add video element
+                    ch.append("video")
+                        .attr("src", d.src)
+                        .attr("controls", true)
+                        .attr("preload", "metadata")
+                        .style("width", "100%")
+                        .style("border-radius", "12px")
+                        .style("margin", "1em 0");
+                } else {
+                    // Add image element (default)
+                    ch.append("img").attr("src", d.src);
+                }
+            });
+
+            // Add byline at the bottom
+            story.append("div")
+                .attr("class", "byline")
+                .style("text-align", "center")
+                .style("margin-top", "3em")
+                .style("padding-bottom", "2em")
+                .html("Story and photos by Marcus Chan • August 2025");
+
+            // ---- SIMPLIFIED DISTANCE MAPPING
+            const TOTAL_ONEWAY_MILES = 8.2;
+            const TOTAL_ONEWAY_METERS = TOTAL_ONEWAY_MILES * 1609.34;
+
+            let photoAlong_m = photos.map((p, i) => {
+                const progress = photos.length > 1 ? (i / (photos.length - 1)) : 0;
+                return progress * TOTAL_ONEWAY_METERS;
+            });
+
+            // Manual distance overrides for accuracy
+            const manualDistances = {
+                0: 0,                    // Curry Village - start
+                1: 0.3 * 1609.34,        // Mist Trail sign - ~0.3 mi
+                2: 1.4 * 1609.34,        // Vernal Fall steps - ~1.4 mi
+                3: 1.5 * 1609.34,        // Top of Vernal Fall - ~1.5 mi
+                4: 2.5 * 1609.34,        // Nevada Fall - ~2.5 mi
+                5: 4.0 * 1609.34,        // Golden Half Dome view - ~4.0 mi
+                6: 6.8 * 1609.34,        // Entering Sub Dome - ~6.8 mi
+                7: 7.2 * 1609.34,        // Going Up Sub Dome - ~7.2 mi
+                8: 7.8 * 1609.34,        // The Cables - ~7.8 mi
+                9: 8.3 * 1609.34,        // Up the Cables - ~8.3 mi
+                10: 8.2 * 1609.34,       // Near summit - ~8.2 mi
+                11: 8.5 * 1609.34,       // Nearing the top - ~8.5 mi
+                12: 8.5 * 1609.34,       // Summit of Half Dome - ~8.5 mi
+                13: 8.5 * 1609.34,       // Proud Papa Bear - ~8.5 mi
+                14: 8.7 * 1609.34,       // Time to Descend - ~8.7 mi
+                15: 8.7 * 1609.34,       // Crowded Cables - ~8.7 mi
+                16: 12.0 * 1609.34,      // Overheating - ~12.0 mi
+                17: 14.6 * 1609.34,      // Vernal Fall in Daylight - ~14.6 mi
+                18: 16.3 * 1609.34       // Back on bikes - ~16.3 mi
+            };
+
+            // Apply manual distances
+            Object.keys(manualDistances).forEach(indexStr => {
+                const index = parseInt(indexStr);
+                if (index < photoAlong_m.length) {
+                    console.log(`Setting photo ${index} distance from ${(photoAlong_m[index] / 1609.34).toFixed(2)} mi to ${(manualDistances[index] / 1609.34).toFixed(2)} mi`);
+                    photoAlong_m[index] = manualDistances[index];
+                }
+            });
+
+            console.log("Final photo distances (miles):", photoAlong_m.map(d => (d / 1609.34).toFixed(2)));
+
+            // ---- ELEVATION CHART
+            const svg = d3.select("#elevation svg");
+            const w = document.getElementById("elevation").clientWidth;
+            const h = document.getElementById("elevation").clientHeight;
+
+            const distMax_m = d3.max(elev, d => d._dist_m);
+            const elevMin_m = d3.min(elev, d => d._elev_m);
+            const elevMax_m = d3.max(elev, d => d._elev_m);
+
+            const x = d3.scaleLinear().domain([0, distMax_m]).range([40, w - 20]);
+            const y = d3.scaleLinear().domain([elevMin_m, elevMax_m]).range([h - 30, 20]);
+
+            // Elevation readout
+            const elevReadout = svg.append("text")
+                .attr("id", "elev-readout-svg")
+                .attr("x", w / 2)
+                .attr("y", h * 0.7)
+                .attr("text-anchor", "middle")
+                .attr("font-size", "14px")
+                .attr("font-family", "Lora, serif")
+                .attr("fill", "#333")
+                .text("— ft • — mi");
+
+            // Add note about approximations
+            svg.append("text")
+                .attr("x", w / 2)
+                .attr("y", h - 5)
+                .attr("text-anchor", "middle")
+                .attr("font-size", "10px")
+                .attr("font-family", "Lora, serif")
+                .attr("fill", "#666")
+                .style("font-style", "italic")
+                .text("Note: Elevation and distance figures are approximations");
+
+            // Elevation line
+            const line = d3.line()
+                .x(d => x(d._dist_m))
+                .y(d => y(d._elev_m));
+            svg.append("path").datum(elev).attr("class", "elev-line").attr("d", line);
+
+            const elevDot = svg.append("circle").attr("class", "elev-dot").attr("r", 5);
+
+            // FIXED: Flexible landmark elevation matching
+            function getElevationAtDistance(targetDist_m, photoIndex = null) {
+                if (!elev.length) return { _elev_m: 0, _dist_m: 0 };
+
+                if (photoIndex !== null && photos[photoIndex]) {
+                    const title = photos[photoIndex].title.toLowerCase();
+
+                    if (title.includes("curry village") || title.includes("parking")) {
+                        return { _dist_m: targetDist_m, _elev_m: 1230 }; // ~4035 ft
+                    }
+                    if (title.includes("happy isles") || title.includes("mist trail sign")) {
+                        return { _dist_m: targetDist_m, _elev_m: 1230 }; // ~4035 ft
+                    }
+                    if (title.includes("vernal fall") && (title.includes("steps") || title.includes("near"))) {
+                        return { _dist_m: targetDist_m, _elev_m: 1350 }; // ~4430 ft
+                    }
+                    if (title.includes("vernal fall") && title.includes("top")) {
+                        return { _dist_m: targetDist_m, _elev_m: 1538 }; // ~5045 ft
+                    }
+                    if (title.includes("nevada fall")) {
+                        return { _dist_m: targetDist_m, _elev_m: 1804 }; // ~5919 ft
+                    }
+                    if (title.includes("half dome") && title.includes("golden")) {
+                        return { _dist_m: targetDist_m, _elev_m: 1900 }; // ~6234 ft
+                    }
+                    if (title.includes("sub dome")) {
+                        if (title.includes("going up")) {
+                            return { _dist_m: targetDist_m, _elev_m: 2438 }; // ~8000 ft
+                        }
+                        return { _dist_m: targetDist_m, _elev_m: 2408 }; // ~7900 ft
+                    }
+                    if (title.includes("go time")) {
+                        return { _dist_m: targetDist_m, _elev_m: 2560 }; // ~8400 ft
+                    }
+                    if (title.includes("cables")) {
+                        return { _dist_m: targetDist_m, _elev_m: 2575 }; // ~8450 ft
+                    }
+                    if (title.includes("nearing the top") || title.includes("near the top")) {
+                        return { _dist_m: targetDist_m, _elev_m: 2667 }; // ~8750 ft
+                    }
+                    if (title.includes("summit") || title.includes("proud papa bear")) {
+                        return { _dist_m: targetDist_m, _elev_m: 2695 }; // ~8842 ft
+                    }
+                    if (title.includes("time to descend")) {
+                        return { _dist_m: targetDist_m, _elev_m: 2591 }; // ~8500 ft
+                    }
+                    if (title.includes("overheating")) {
+                        return { _dist_m: targetDist_m, _elev_m: 1875 }; // ~6150 ft (Little Yosemite Valley)
+                    }
+                }
+
+                // Fallback: interpolate from elevation CSV
+                if (targetDist_m <= elev[0]._dist_m) return elev[0];
+                if (targetDist_m >= elev[elev.length - 1]._dist_m) return elev[elev.length - 1];
+
+                for (let i = 0; i < elev.length - 1; i++) {
+                    const curr = elev[i];
+                    const next = elev[i + 1];
+
+                    if (targetDist_m >= curr._dist_m && targetDist_m <= next._dist_m) {
+                        const ratio = (targetDist_m - curr._dist_m) / (next._dist_m - curr._dist_m);
+                        const interpolatedElev = curr._elev_m + ratio * (next._elev_m - curr._elev_m);
+
+                        return { _dist_m: targetDist_m, _elev_m: interpolatedElev };
+                    }
+                }
+
+                return elev[0];
+            }
+
+            function setElevReadout(feet, miles) {
+                elevReadout.text(`${feet.toLocaleString()} ft • ${miles.toFixed(2)} mi`);
+            }
+
+            function moveElevationDotToChapter(index) {
+                if (!elev.length || index >= photoAlong_m.length) return;
+
+                const targetDist_m = photoAlong_m[index];
+                const elevPoint = getElevationAtDistance(targetDist_m, index);
+
+                const cx = x(elevPoint._dist_m);
+                const cy = y(elevPoint._elev_m);
+                elevDot.attr("cx", cx).attr("cy", cy);
+
+                const miles = elevPoint._dist_m / 1609.34;
+                const feet = Math.round(elevPoint._elev_m * 3.28084);
+                setElevReadout(feet, miles);
+            }
+
+            // Initialize with first chapter
+            moveElevationDotToChapter(0);
+
+            // ---- MAP SETUP (if available)
+            let map = null;
+            let marker = null;
+
+            console.log('Mapbox available:', typeof mapboxgl !== 'undefined');
+
+            if (typeof mapboxgl !== 'undefined') {
+                try {
+                    mapboxgl.accessToken = "pk.eyJ1IjoibWNoYW43NyIsImEiOiJjbWVobDNwOXEwNXd4Mm1vanJocHNpdml6In0.XyN_h8MiSnqpCQiquADSfw";
+                    console.log('Mapbox token set');
+
+                    map = new mapboxgl.Map({
+                        container: "map",
+                        style: "mapbox://styles/mapbox/outdoors-v12",
+                        center: [-119.5332, 37.7459], // Half Dome coordinates
+                        zoom: 12
+                    });
+                    console.log('Map object created');
+
+                    map.on("load", () => {
+                        console.log('Map loaded successfully');
+                        map.addSource("route", { type: "geojson", data: route });
+                        map.addLayer({
+                            id: "route",
+                            type: "line",
+                            source: "route",
+                            paint: { "line-color": "#e67e22", "line-width": 4 }
+                        });
+                        console.log('Route layer added');
+                    });
+
+                    map.on("error", (e) => {
+                        console.error('Map error:', e);
+                    });
+
+                    marker = new mapboxgl.Marker({
+                        color: '#FF4444' // Bright red for visibility
+                    }).setLngLat([photos[0].lon, photos[0].lat]).addTo(map);
+                    console.log('Map and marker initialized successfully');
+                } catch (error) {
+                    console.error('Map failed to initialize:', error);
+                    marker = null;
+                }
+            } else {
+                console.log('Mapbox not available - elevation chart will work without map');
+            }
+
+            // ---- Scrollama setup
+            if (typeof scrollama !== 'undefined') {
+                const scroller = scrollama();
+                scroller
+                    .setup({ step: ".chapter", offset: 0.6 })
+                    .onStepEnter(function (response) {
+                        console.log(`Scrolled to chapter ${response.index + 1}`);
+
+                        // Update elevation chart
+                        moveElevationDotToChapter(response.index);
+
+                        // Update map marker if available
+                        if (marker && photos[response.index]) {
+                            try {
+                                marker.setLngLat([photos[response.index].lon, photos[response.index].lat]);
+                            } catch (error) {
+                                console.warn('Could not update marker:', error);
+                            }
+                        }
+                    });
+                console.log('Scrollama initialized successfully');
+            } else {
+                console.error('Scrollama not loaded');
+            }
+
+        }).catch(error => {
+            console.error('Error loading data:', error);
+            document.getElementById('debug-info').innerHTML = 'ERROR: Could not load data files';
+        });
+    </script>
+</body>
+
+</html>
